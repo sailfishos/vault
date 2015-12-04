@@ -5,8 +5,8 @@ Summary: Incremental backup/restore framework
 Name: vault
 Version: 0.1.0
 Release: 1
-License: LGPL21
-Group: Development/Liraries
+License: LGPLv2.1
+Group: Development/Libraries
 URL: https://github.com/nemomobile/vault
 Source0: %{name}-%{version}.tar.bz2
 BuildRequires: cmake >= 2.8
@@ -27,15 +27,12 @@ Incremental backup/restore framework
 
 %package devel
 Summary: vault headers etc.
-Group: Development/Libraries
 Requires: %{name} = %{version}-%{release}
 %description devel
 vault library header files etc.
 
 %package tests
 Summary:    Tests for vault
-License:    LGPLv2.1
-Group:      System Environment/Libraries
 Requires:   %{name} = %{version}-%{release}
 %description tests
 %summary
