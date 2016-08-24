@@ -36,7 +36,7 @@ GIT_DIR=$(pwd)
 
 find $DST -type l | grep '/blobs/' | while read -r LINK
 do
-    NAME=$(readlink $LINK)
+    NAME=$(readlink "$LINK")
     # match minimal relative blob ref (path inside the tree is unit/blobs/link)
     if [[ $NAME =~ \.\./\.\./\.git/blobs/ ]]; then
         FNAME=$(basename $NAME)
@@ -44,7 +44,7 @@ do
         [ -d $DNAME ] || error "There is no blob dir $DNAME for $LINK"
         FNAME="$DNAME/$FNAME"
         [ -f $FNAME ] || error "There is no blob file $FNAME for $LINK"
-        unlink $LINK || error "Can't unlink $LINK"
-        cp $FNAME $LINK || error "Can't copy $FNAME to $LINK"
+        unlink "$LINK" || error "Can't unlink $LINK"
+        cp $FNAME "$LINK" || error "Can't copy $FNAME to $LINK"
     fi
 done
