@@ -5,9 +5,9 @@ Summary: Incremental backup/restore framework
 Name: vault
 Version: 0.1.0
 Release: 1
-License: LGPLv2.1
+License: LGPLv2+
 Group: Development/Libraries
-URL: https://github.com/nemomobile/vault
+URL: https://git.merproject.org/mer-core/vault
 Source0: %{name}-%{version}.tar.bz2
 BuildRequires: cmake >= 2.8
 BuildRequires: pkgconfig(cor) >= 0.1.14
@@ -19,6 +19,9 @@ BuildRequires: pkgconfig(qtaround) >= 0.2.3
 %{?_with_usersession:Requires: systemd-user-session-targets}
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
+
+# gawk needed by /usr/libexec/vault/git-vault-gc
+Requires: gawk
 
 %description
 Incremental backup/restore framework
