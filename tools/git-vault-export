@@ -23,7 +23,7 @@ git rev-parse "$SNAP" >/dev/null || error "There is no snapshot $SNAP"
 [ -d $DST ] || error "There is no destination dir $DST"
 
 # only $DST itself is expected
-COUNT=$(find $DST -maxdepth 1 -not -name '.' | wc -l)
+COUNT=$(find $DST -maxdepth 1 '!' -name '.' | wc -l)
 if [ "x$COUNT" != "x1" ]; then
     error "Dst dir $DST should be empty, found $COUNT entries"
 fi
