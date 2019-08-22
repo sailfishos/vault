@@ -6,7 +6,7 @@
  * @par License: LGPL 2.1 http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
  */
 
-#include <vault/unit.hpp>
+#include "unit.h"
 
 #include <qtaround/util.hpp>
 #include <qtaround/os.hpp>
@@ -26,6 +26,8 @@ namespace vault { namespace unit {
 
 static const unsigned current_version = 1;
 static const QString default_preserve = "mode,ownership,timestamps";
+
+static const QString config_prefix = ".f8b52b7481393a3e6ade051ecfb549fa";
 
 namespace {
 QVariantMap options_info
@@ -52,7 +54,7 @@ typedef QList<QVariantMap> list_type;
 class Version {
 public:
     Version(QString const &root)
-        : fname(os::path::join(root, vault::config::prefix + ".unit.version"))
+        : fname(os::path::join(root, config_prefix + ".unit.version"))
     {}
     unsigned get()
     {
@@ -131,7 +133,7 @@ private:
 
     static QString get_link_info_fname(QString const &root)
     {
-        return os::path::join(root, vault::config::prefix + ".links");
+        return os::path::join(root, config_prefix + ".links");
     }
 
     Version version(QString const &root)
