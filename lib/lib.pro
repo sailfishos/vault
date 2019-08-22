@@ -3,6 +3,8 @@ TARGET = vault
 TARGET = $$qtLibraryTarget($$TARGET)
 TARGETPATH = $$[QT_INSTALL_LIBS]
 
+QT -= gui
+
 CONFIG += create_pc create_prl no_install_prl link_pkgconfig
 PKGCONFIG += qtaround
 
