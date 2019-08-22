@@ -4,7 +4,7 @@ Version: 1.0.0
 Release: 1
 License: LGPLv2.1
 Group: Development/Libraries
-URL: https://github.com/nemomobile/vault
+URL: https://git.sailfishos.org/mer-core/vault
 Source0: %{name}-%{version}.tar.bz2
 BuildRequires: pkgconfig(Qt5Core) >= 5.2.0
 BuildRequires: pkgconfig(qtaround) >= 0.2.3
