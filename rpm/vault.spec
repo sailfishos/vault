@@ -1,8 +1,8 @@
 Summary: Incremental backup/restore framework
 Name: vault
-Version: 1.0.0
+Version: 1.0.1
 Release: 1
-License: LGPLv2.1
+License: LGPLv2
 Group: Development/Libraries
 URL: https://git.sailfishos.org/mer-core/vault
 Source0: %{name}-%{version}.tar.bz2
