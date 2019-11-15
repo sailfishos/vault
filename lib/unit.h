@@ -9,7 +9,7 @@
  */
 
 #include <memory>
-
+#include <QString>
 #include <QVariantMap>
 
 namespace qtaround { namespace sys { class GetOpt; }}
@@ -20,6 +20,10 @@ typedef std::unique_ptr<qtaround::sys::GetOpt> options_uptr;
 options_uptr getopt();
 
 int execute(options_uptr, QVariantMap const &info);
+
+int execute(QVariantMap const &info);
+
+int runProcess(const QString &program, const QStringList &args);
 
 }}
 

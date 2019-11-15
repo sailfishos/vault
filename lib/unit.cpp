@@ -14,6 +14,9 @@
 #include <qtaround/debug.hpp>
 
 #include <QString>
+#include <QProcess>
+#include <QDebug>
+#include <QLoggingCategory>
 
 namespace os = qtaround::os;
 namespace error = qtaround::error;
@@ -21,6 +24,8 @@ namespace sys = qtaround::sys;
 namespace util = qtaround::util;
 namespace json = qtaround::json;
 namespace debug = qtaround::debug;
+
+Q_LOGGING_CATEGORY(lcBackup, "org.sailfishos.backup", QtWarningMsg)
 
 namespace vault { namespace unit {
 
@@ -493,6 +498,32 @@ int execute(std::unique_ptr<sys::GetOpt>, QVariantMap const &info)
     Operation op(getopt(), info);
     op.execute();
     // TODO catch and return
+    return 0;
+}
+
+int execute(QVariantMap const &info)
+{
+    try {
+        Operation op(getopt(), info);
+        op.execute();
+    } catch (error::Error const &e) {
+        qCDebug(lcBackup) << e;
+        return 1;
+    }
+    return 0;
+}
+
+int runProcess(const QString &program, const QStringList &args)
+{
+    QProcess ps;
+    ps.start(program, args);
+    ps.waitForFinished(-1);
+    if (ps.exitStatus() == QProcess::CrashExit || ps.exitCode() != 0) {
+        qCDebug(lcBackup) << ps.program() << "failed";
+        qCDebug(lcBackup) << ps.readAllStandardError();
+        qCDebug(lcBackup) << ps.readAllStandardOutput();
+        return 1;
+    }
     return 0;
 }
 
