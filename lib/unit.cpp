@@ -509,6 +509,9 @@ int execute(QVariantMap const &info)
     } catch (error::Error const &e) {
         qCDebug(lcBackup) << e;
         return 1;
+    } catch (std::exception const &e) {
+        qCDebug(lcBackup) << e.what();
+        return 2;
     }
     return 0;
 }
@@ -525,6 +528,18 @@ int runProcess(const QString &program, const QStringList &args)
         return 1;
     }
     return 0;
+}
+
+QString optValue(const QString &arg)
+{
+    try {
+        return getopt()->value(arg);
+    } catch (error::Error const &e) {
+        qCDebug(lcBackup) << e;
+    } catch (std::exception const & e) {
+        qCDebug(lcBackup) << e.what();
+    }
+    return QString();
 }
 
 }} // namespace vault::unit

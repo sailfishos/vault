@@ -25,6 +25,8 @@ int execute(QVariantMap const &info);
 
 int runProcess(const QString &program, const QStringList &args);
 
+QString optValue(const QString &arg);
+
 }}
 
 #endif // _CUTES_UNIT_HPP_
