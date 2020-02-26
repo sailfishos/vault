@@ -8,25 +8,16 @@
  * @par License: LGPL 2.1 http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
  */
 
-#include <memory>
 #include <QString>
 #include <QVariantMap>
 
-namespace qtaround { namespace sys { class GetOpt; }}
-
 namespace vault { namespace unit {
-
-typedef std::unique_ptr<qtaround::sys::GetOpt> options_uptr;
-options_uptr getopt();
-
-int execute(options_uptr, QVariantMap const &info);
 
 int execute(QVariantMap const &info);
 
 int runProcess(const QString &program, const QStringList &args);
 
 QString optValue(const QString &arg);
-
 }}
 
 #endif // _CUTES_UNIT_HPP_
