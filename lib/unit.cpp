@@ -7,51 +7,120 @@
  */
 
 #include "unit.h"
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <utime.h>
 
 #include <qtaround/util.hpp>
 #include <qtaround/os.hpp>
-#include <qtaround/json.hpp>
-#include <qtaround/debug.hpp>
 
+#include <QCommandLineParser>
+#include <QCommandLineOption>
 #include <QString>
 #include <QProcess>
 #include <QDebug>
 #include <QLoggingCategory>
+#include <QJsonObject>
+#include <QJsonDocument>
 
 namespace os = qtaround::os;
 namespace error = qtaround::error;
-namespace sys = qtaround::sys;
 namespace util = qtaround::util;
-namespace json = qtaround::json;
-namespace debug = qtaround::debug;
 
 Q_LOGGING_CATEGORY(lcBackup, "org.sailfishos.backup", QtWarningMsg)
 
 namespace vault { namespace unit {
 
 static const unsigned current_version = 1;
-static const QString default_preserve = "mode,ownership,timestamps";
-
 static const QString config_prefix = ".f8b52b7481393a3e6ade051ecfb549fa";
 
 namespace {
-QVariantMap options_info
-= {{"dir", map({{"short", "d"}, {"long", "dir"}
-                , {"required", true}, {"has_param", true}})}
-   , {"bin-dir", map({{"short", "b"}, {"long", "bin-dir"}
-                , {"required", true}, {"has_param", true}})}
-   , {"home-dir", map({{"short", "H"}, {"long", "home-dir"}
-                , {"required", true}, {"has_param", true}})}
-   , {"action", map({{"short", "a"}, {"long", "action"}
-                , {"required", true}, {"has_param", true}})}};
 
-class Config
+const QList <QCommandLineOption> options_info =
+  {QCommandLineOption({"d", "dir"},      "dir",     "undef"),
+   QCommandLineOption({"b", "bin-dir"},  "bin-dir", "undef"),
+   QCommandLineOption({"H", "home-dir"}, "home",    "undef"),
+   QCommandLineOption({"n", "name"},     "appname", "undef"),
+   QCommandLineOption({"a", "action"},   "action",  "undef")};
+
+// QCommandLineParser can't handle whitespaces, thus do preprocessing.
+QStringList parseArgs()
 {
-public:
-    void add(QString const &name, QString const &script);
-    void remove(QString const &name);
-};
+    auto args = QCoreApplication::arguments();
+    QStringList argsWithSpace = {args[0]};
+    QString withSpace;
+    QString argname;
+    for (int i = 1; i < args.size(); ++i) {
+        QString arg = args[i];
+        if (arg.at(0) == '-') {
+            if (!withSpace.isEmpty()) {
+                argsWithSpace << argname << withSpace.remove(withSpace.size()-1, 1);
+                withSpace.clear();
+            }
+            argname = arg;
+        } else if (i == args.size()-1) {
+            withSpace += arg;
+            argsWithSpace << argname << withSpace;
+        } else {
+            withSpace += arg + " ";
+        }
+    }
+    return argsWithSpace;
+}
 
+// cp -L -p -f
+void copy(QString const &src, QString dst)
+{
+    bool failure = false;
+    if (QFileInfo(dst).isDir())
+        dst += QDir::separator() + QFileInfo(src).fileName();
+    if (QFile(dst).exists())
+        failure |= !QFile::remove(dst);
+
+    struct stat statbuf;
+    failure |= stat(src.toStdString().c_str(), &statbuf);
+    const struct utimbuf timestamp = {statbuf.st_atime, statbuf.st_mtime};
+
+    if (QFile::copy(src, dst)) {
+        QFile(dst).setPermissions(QFile(src).permissions());
+        failure |= chown(dst.toStdString().c_str(), statbuf.st_uid, statbuf.st_gid);
+        failure |= utime(dst.toStdString().c_str(), &timestamp);
+    } else {
+        failure = true;
+    }
+    if (failure)
+        qCWarning(lcBackup) << "Copy failed:" << src << dst;
+}
+
+void cptree(QString const &src, QString dst, bool update=false, bool first=true)
+{
+
+    if (first && QFileInfo(src).baseName() != QFileInfo(dst).baseName())
+        dst += "/" + QFileInfo(src).baseName();
+
+    QDir dir(src);
+    if (!dir.exists())
+        return;
+    QDir().mkpath(dst);
+
+    for (auto &d : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QString dir = QDir::separator() + d;
+        cptree(src+dir, dst+dir, update, false);
+    }
+    for (auto &f : dir.entryList(QDir::Files)) {
+        QString file = QDir::separator() + f;
+        if ((!update || !QFileInfo(dst+file).exists()) ||
+            (QFileInfo(src+file).lastModified() >= QFileInfo(dst+file).lastModified())) {
+            copy(src+file, dst+file);
+        }
+    }
+}
+
+void update_tree(QString const &src, QString const &dst)
+{
+    cptree(src, dst, true);
+}
 
 typedef QVariantMap map_type;
 typedef QList<QVariantMap> list_type;
@@ -59,7 +128,7 @@ typedef QList<QVariantMap> list_type;
 class Version {
 public:
     Version(QString const &root)
-        : fname(os::path::join(root, config_prefix + ".unit.version"))
+        : fname(root + "/" + config_prefix + ".unit.version")
     {}
     unsigned get()
     {
@@ -78,12 +147,12 @@ private:
 class Operation
 {
 public:
-    Operation(std::unique_ptr<sys::GetOpt> o, map_type const &c)
-        : options(std::move(o))
-        , context(c)
-        , vault_dir({{"bin", options->value("bin-dir")}, {"data", options->value("dir")}})
-        , home(os::path::canonical(options->value("home-dir")))
+    Operation(map_type const &c) : context(c)
     {
+        parser.addOptions(options_info);
+        parser.process(parseArgs());
+        vault_dir = {{"bin", parser.value("bin-dir")}, {"data", parser.value("dir")}};
+        home = QFileInfo(parser.value("home-dir")).canonicalFilePath();
     }
 
     void execute();
@@ -128,12 +197,23 @@ private:
                     , map_type const &location);
 
     static map_type read_links(QString const &root_dir) {
-        return json::read(get_link_info_fname(root_dir)).toVariantMap();
+        QFile f(get_link_info_fname(root_dir));
+        if (!f.open(QFile::ReadOnly)) {
+            qCWarning(lcBackup) << "Unable to open" << f.fileName();
+            return map_type();
+        }
+        auto data = f.readAll();
+        return QJsonDocument::fromJson(data).object().toVariantMap();
     }
 
     static size_t write_links(map_type const &links, QString const &root_dir)
     {
-        return json::write(links, get_link_info_fname(root_dir));
+        QFile f(get_link_info_fname(root_dir));
+        if (!f.open(QFile::WriteOnly)) {
+            qCWarning(lcBackup) << "Can't write to" << f.fileName();
+            return 0;
+        }
+        return f.write(QJsonDocument::fromVariant(links).toJson());
     }
 
     static QString get_link_info_fname(QString const &root)
@@ -148,7 +228,7 @@ private:
 
     QString get_root_vault_dir(QString const &data_type);
 
-    std::unique_ptr<sys::GetOpt> options;
+    QCommandLineParser parser;
     map_type const &context;
     map_type vault_dir;
     QString home;
@@ -184,31 +264,28 @@ void Operation::to_vault(QString const &data_type
                          , map_type const &location)
 {
     auto paths = unbox(std::move(paths_ptr));
-    debug::debug("To vault", data_type, "Paths", paths, "Location", location);
+    qCDebug(lcBackup) << "To vault" << data_type << "Paths" << paths << "Location" << location;
     auto dst_root = get_root_vault_dir(data_type);
     auto link_info_path = get_link_info_fname(dst_root);
     Links links(read_links(dst_root), dst_root);
 
     auto copy_entry = [dst_root](map_type const &info) {
-        debug::debug("COPY", info);
+        qCDebug(lcBackup) << "COPY" << info;
         auto dst = os::path::dirName(os::path::join(dst_root, str(info["path"])));
         auto src = str(info["full_path"]);
-        map_type options = {{"preserve", default_preserve}};
-        int (*fn)(QString const&, QString const&, map_type &&);
 
         if (!(os::path::isDir(dst) || os::mkdir(dst, {{ "parent", true }}))) {
             error::raise({{"msg", "Can't create destination in vault"}
                     , {"path", dst}});
         }
 
-        if (os::path::isDir(src)) {
-            fn = &os::update_tree;
-        } else if (os::path::isFile(src)) {
-            fn = &os::cp;
+        if (QFileInfo(src).isDir()) {
+            update_tree(src, dst);
+        } else if (QFileInfo(src).isFile()) {
+            copy(src, dst);
         } else {
             error::raise({{"msg", "No handler for this entry type"}, {"path", src}});
         }
-        fn(src, dst, std::move(options));
     };
 
     auto process_symlink = [this, &links](map_type &v) {
@@ -217,7 +294,7 @@ void Operation::to_vault(QString const &data_type
         if (!os::path::isSymLink(full_path))
             return;
 
-        debug::debug("Process symlink", v);
+        qCDebug(lcBackup) << "Process symlink" << v;
         if (!os::path::isDescendent(full_path, str(get(v, "root_path")))) {
             if (is(get(v, "required")))
                 error::raise({{"msg", "Required path does not belong to its root dir"}
@@ -235,7 +312,7 @@ void Operation::to_vault(QString const &data_type
         link_info.unite(v);
         link_info["target"] = tgt;
         link_info["target_path"] = tgt_path;
-        debug::debug("Symlink info", link_info);
+        qCDebug(lcBackup) << "Symlink info" << link_info;
         links.add(link_info);
 
         v["full_path"] = full_path;
@@ -254,7 +331,7 @@ void Operation::to_vault(QString const &data_type
             res = false;
         }
         if (!res)
-            debug::info("Does not exist/skip", info);
+            qCDebug(lcBackup) << "Does not exist/skip" << info;
 
         return res;
     };
@@ -275,7 +352,7 @@ void Operation::from_vault(QString const &data_type
                            , map_type const &location)
 {
     auto items = unbox(std::move(paths_ptr));
-    debug::debug("From vault", data_type, "Paths", items, "Location", location);
+    qCDebug(lcBackup) << "From vault" << data_type << "Paths" << items << "Location" << location;
     QString src_root(get_root_vault_dir(data_type));
 
     bool overwrite_default;
@@ -289,7 +366,7 @@ void Operation::from_vault(QString const &data_type
     Links links(read_links(src_root), src_root);
 
     auto fallback_v0 = [src_root, &items]() {
-        debug::warning("Restoring from old unit version");
+        qCDebug(lcBackup) << "Restoring from old unit version";
         if (items.empty())
             error::raise({{"msg", "There should be at least 1 item"}});
         // during migration from initial format old (and single)
@@ -299,8 +376,7 @@ void Operation::from_vault(QString const &data_type
             if (!os::mkdir(dst, {{"parent", true}}))
                 error::raise({{"msg", "Can't create directory"}, {"dir", dst}});
         }
-        os::update_tree(os::path::join(src_root, "."), dst
-                        , {{"preserve", default_preserve}, {"deref", true}});
+        update_tree(src_root, dst);
     };
 
     auto process_absent_and_links = [src_root, &links](map_type &item) {
@@ -319,14 +395,14 @@ void Operation::from_vault(QString const &data_type
         };
 
         if (link.empty()) {
-            debug::debug("No symlink for", item_path);
+            qCDebug(lcBackup) << "No symlink for" << item_path;
             if (is(item["required"]))
                 error::raise({{"msg", "No required source item"},
                             {"path", src}, {"path", link["path"]}});
             return map_type();
         }
 
-        debug::debug("There is a symlink for", item_path);
+        qCDebug(lcBackup) << "There is a symlink for" << item_path;
         QVariantMap linked(item);
         auto target_path = str(link["target_path"]);
         linked["path"] = target_path;
@@ -336,7 +412,7 @@ void Operation::from_vault(QString const &data_type
             linked["src"] = src;
             linked["skip"] = false;
             create_link(link, item);
-            debug::debug("Symlink target path is", linked);
+            qCDebug(lcBackup) << "Symlink target path is" << linked;
             return linked;
         } else if (is(item["required"])) {
             error::raise({{"msg", "No linked source item"},
@@ -362,80 +438,55 @@ void Operation::from_vault(QString const &data_type
             linked_items.push_back(std::move(linked));
     }
     items.append(linked_items);
-    debug::debug("LINKED+", items);
+    qCDebug(lcBackup) << "LINKED+" << items;
 
     for (auto it = items.begin(); it != items.end(); ++it) {
         auto &item = *it;
         QString src, dst_dir, dst;
         if (is(item["skip"])) {
-            debug::debug("Skipping", str(item["path"]));
+            qCDebug(lcBackup) << "Skipping" << item["path"].toString();
             continue;
         }
         bool overwrite;
-        std::function<void()> fn;
-
-        map_type options = {{"preserve", default_preserve}, {"deref", true}};
         {
             auto v = item["overwrite"];
-            overwrite = v.isValid() ? is(v) : overwrite_default;
+            overwrite = v.isValid() ? v.toBool() : overwrite_default;
         }
 
         // TODO process correctly self dir (copy with dir itself)
         create_dst_dirs(item);
-        src = str(item["src"]);
-        if (os::path::isDir(src)) {
-            dst = os::path::canonical(str(item["full_path"]));
-            dst_dir = os::path::dirName(dst);
-            src = os::path::canonical(src);
-            if (overwrite) {
-                options["force"] = true;
-                fn = [src, dst, dst_dir, &options]() {
-                    os::cptree(src, dst_dir, std::move(options));
-                };
-            } else {
-                fn = [src, dst, dst_dir, &options]() {
-                    os::update_tree(src, dst_dir, std::move(options));
-                };
-            }
-        } else if (os::path::isFile(src)) {
-            dst = str(item["full_path"]);
-            dst_dir = os::path::dirName(dst);
-
-            if (overwrite) {
-                options["force"] = true;
-                fn = [src, dst, dst_dir, &options]() {
-                    os::unlink(dst);
-                    os::cp(src, dst_dir, std::move(options));
-                };
-            } else {
-                fn = [src, dst, &options]() {
-                    os::cp(src, dst, std::move(options));
-                };
-            }
+        src = item["src"].toString();
+        dst = item["full_path"].toString();
+        dst_dir = QFileInfo(dst).path();
+        if (QFileInfo(src).isDir()) {
+            src = QFileInfo(src).canonicalFilePath();
+            cptree(src, dst_dir);
+        } else if (QFileInfo(src).isFile()) {
+            if (overwrite)
+                unlink(dst.toStdString().c_str());
+            copy(src, dst_dir);
+        } else {
+            qCWarning(lcBackup) << "No operation done or file found:" << src;
         }
-        fn();
     }
 }
 
 void Operation::execute()
 {
-    debug::info("Unit execute. Context:", context);
-    QString vault_bin_dir = str(options->value("bin-dir")),
-        vault_data_dir = str(options->value("dir"));
-
+    qCDebug(lcBackup) << "Unit execute. Context:" << context;
     action_type action;
 
     if (!os::path::isDir(home))
         error::raise({{"msg", "Home dir doesn't exist"}, {"dir", home}});
 
-    auto action_name = options->value("action");
+    auto action_name = parser.value("action");
     using namespace std::placeholders;
     if (action_name == "export") {
         action = std::bind(&Operation::to_vault, this, _1, _2, _3);
     } else if (action_name == "import") {
         action = std::bind(&Operation::from_vault, this, _1, _2, _3);
     } else {
-        error::raise({{ "msg", "Unknown action"}, {"action", options->value("action")}});
+        error::raise({{ "msg", "Unknown action"}, {"action", action_name}});
     }
 
     auto get_home_path = [this](QVariant const &item) {
@@ -488,23 +539,10 @@ void Operation::execute()
 
 } // namespace
 
-std::unique_ptr<sys::GetOpt> getopt()
-{
-    return sys::getopt(options_info);
-}
-
-int execute(std::unique_ptr<sys::GetOpt>, QVariantMap const &info)
-{
-    Operation op(getopt(), info);
-    op.execute();
-    // TODO catch and return
-    return 0;
-}
-
 int execute(QVariantMap const &info)
 {
     try {
-        Operation op(getopt(), info);
+        Operation op(info);
         op.execute();
     } catch (error::Error const &e) {
         qCDebug(lcBackup) << e;
@@ -522,9 +560,9 @@ int runProcess(const QString &program, const QStringList &args)
     ps.start(program, args);
     ps.waitForFinished(-1);
     if (ps.exitStatus() == QProcess::CrashExit || ps.exitCode() != 0) {
-        qCDebug(lcBackup) << ps.program() << "failed";
-        qCDebug(lcBackup) << ps.readAllStandardError();
-        qCDebug(lcBackup) << ps.readAllStandardOutput();
+        qCWarning(lcBackup) << ps.program() << args << "failed";
+        qCWarning(lcBackup) << ps.readAllStandardError();
+        qCWarning(lcBackup) << ps.readAllStandardOutput();
         return 1;
     }
     return 0;
@@ -532,14 +570,10 @@ int runProcess(const QString &program, const QStringList &args)
 
 QString optValue(const QString &arg)
 {
-    try {
-        return getopt()->value(arg);
-    } catch (error::Error const &e) {
-        qCDebug(lcBackup) << e;
-    } catch (std::exception const & e) {
-        qCDebug(lcBackup) << e.what();
-    }
-    return QString();
+    QCommandLineParser p;
+    p.addOptions(options_info);
+    p.process(parseArgs());
+    return p.value(arg);
 }
 
 }} // namespace vault::unit
