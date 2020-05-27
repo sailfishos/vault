@@ -7,7 +7,6 @@ Group: Development/Libraries
 URL: https://git.sailfishos.org/mer-core/vault
 Source0: %{name}-%{version}.tar.bz2
 BuildRequires: pkgconfig(Qt5Core) >= 5.2.0
-BuildRequires: pkgconfig(qtaround) >= 0.2.3
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
 
