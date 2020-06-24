@@ -11,9 +11,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <utime.h>
-
-#include <qtaround/util.hpp>
-#include <qtaround/os.hpp>
+#include <memory>
+#include <functional>
 
 #include <QCommandLineParser>
 #include <QCommandLineOption>
@@ -23,10 +22,10 @@
 #include <QLoggingCategory>
 #include <QJsonObject>
 #include <QJsonDocument>
-
-namespace os = qtaround::os;
-namespace error = qtaround::error;
-namespace util = qtaround::util;
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QDateTime>
 
 Q_LOGGING_CATEGORY(lcBackup, "org.sailfishos.backup", QtWarningMsg)
 
@@ -128,17 +127,24 @@ typedef QList<QVariantMap> list_type;
 class Version {
 public:
     Version(QString const &root)
-        : fname(root + "/" + config_prefix + ".unit.version")
+        : fname(QFileInfo(root + "/" + config_prefix + ".unit.version").absoluteFilePath())
     {}
     unsigned get()
     {
-        return os::path::exists(fname)
-            ? QString::fromUtf8(os::read_file(fname)).toInt()
+        QFile f(fname);
+        if (!f.open(QIODevice::ReadOnly))
+            qCWarning(lcBackup) << "Can't open file" << fname;
+        return f.exists()
+            ? QString(f.readAll()).toInt()
             : 0;
     }
     void save()
     {
-        os::write_file(fname, "1");
+        QFile f(fname);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(std::to_string(current_version).c_str());
+        else
+            qCWarning(lcBackup) << "Can't open file" << fname;
     }
 private:
     QString fname;
@@ -158,7 +164,7 @@ public:
     void execute();
 private:
 
-    typedef std::function<void (QString const &, std::unique_ptr<list_type>
+    typedef std::function<void (QString const &, list_type &
                                 , map_type const &)> action_type;
 
     class Links
@@ -172,7 +178,7 @@ private:
         void add(map_type const &info) {
             map_type value = {{ "target", info["target"]}
                               , {"target_path", info["target_path"]}};
-            data.insert(str(info["path"]), std::move(value));
+            data.insert(info["path"].toString(), std::move(value));
         }
 
         void save() {
@@ -181,7 +187,7 @@ private:
         }
 
         map_type get(map_type const &info) {
-            return data[str(info["path"])].toMap();
+            return data[info["path"].toString()].toMap();
         }
 
         map_type data;
@@ -189,11 +195,11 @@ private:
     };
 
     void to_vault(QString const &data_type
-                  , std::unique_ptr<list_type> paths_ptr
+                  , list_type &paths
                   , map_type const &location);
 
     void from_vault(QString const &data_type
-                    , std::unique_ptr<list_type> paths_ptr
+                    , list_type &paths
                     , map_type const &location);
 
     static map_type read_links(QString const &root_dir) {
@@ -218,7 +224,7 @@ private:
 
     static QString get_link_info_fname(QString const &root)
     {
-        return os::path::join(root, config_prefix + ".links");
+        return QFileInfo(root + "/" + config_prefix + ".links").absoluteFilePath();
     }
 
     Version version(QString const &root)
@@ -236,111 +242,106 @@ private:
 
 void create_dst_dirs(map_type const &item)
 {
-    auto path = str(item["full_path"]);
-    if (!os::path::isDir(str(item["src"])))
-        path = os::path::dirName(path);
+    QString path = item["full_path"].toString();
+    if (!QFileInfo(item["src"].toString()).isDir())
+        path = QFileInfo(path).dir().dirName();
 
-    if (!os::path::isDir(path)) {
-        if (!os::mkdir(path, {{"parent", true}}) && is(item["required"]))
-            error::raise({{"msg", "Can't recreate tree to required item"},
-                        {"path", item["path"]},
-                            {"dst_dir", path}});
+    if (!QFileInfo(path).isDir()) {
+        if (!QDir().mkpath(path) && item["required"].toBool())
+            throw std::runtime_error("Can't create path " + path.toStdString());
     }
 }
 
 QString Operation::get_root_vault_dir(QString const &data_type)
 {
-    auto res = str(vault_dir[data_type]);
-    if (res.isEmpty())
-        error::raise({{"msg", "Unknown data type is unknown"},
-                    {"data_type", data_type}});
-    if (!os::path::isDir(res))
-        error::raise({{"msg", "Vault dir doesn't exist?"}, {"dir", res }});
+    QString res = vault_dir[data_type].toString();
+    if (!QFileInfo(res).isDir())
+        throw std::runtime_error("Vault dir doesn't exist: " + res.toStdString()
+                                 + " or unknown datatype:  " + data_type.toStdString());
     return res;
 }
 
 void Operation::to_vault(QString const &data_type
-                         , std::unique_ptr<list_type> paths_ptr
+                         , list_type &paths
                          , map_type const &location)
 {
-    auto paths = unbox(std::move(paths_ptr));
-    qCDebug(lcBackup) << "To vault" << data_type << "Paths" << paths << "Location" << location;
-    auto dst_root = get_root_vault_dir(data_type);
-    auto link_info_path = get_link_info_fname(dst_root);
+    qCDebug(lcBackup) << "To vault" << data_type << "Paths"
+                      << paths << "Location" << location;
+
+    QString dst_root = get_root_vault_dir(data_type);
+    QString link_info_path = get_link_info_fname(dst_root);
     Links links(read_links(dst_root), dst_root);
 
     auto copy_entry = [dst_root](map_type const &info) {
         qCDebug(lcBackup) << "COPY" << info;
-        auto dst = os::path::dirName(os::path::join(dst_root, str(info["path"])));
-        auto src = str(info["full_path"]);
+        QString dst = QFileInfo(dst_root + "/" + info["path"].toString()).absolutePath();
+        QString src = info["full_path"].toString();
 
-        if (!(os::path::isDir(dst) || os::mkdir(dst, {{ "parent", true }}))) {
-            error::raise({{"msg", "Can't create destination in vault"}
-                    , {"path", dst}});
+        if (!QFileInfo(dst).isDir() && !QDir().mkpath(dst)) {
+            throw std::runtime_error("Can't create destination in vault: "
+                                     + dst.toStdString());
         }
-
         if (QFileInfo(src).isDir()) {
             update_tree(src, dst);
         } else if (QFileInfo(src).isFile()) {
             copy(src, dst);
         } else {
-            error::raise({{"msg", "No handler for this entry type"}, {"path", src}});
+            throw std::runtime_error("No handler for this entry type"
+                                     + src.toStdString());
         }
     };
 
-    auto process_symlink = [this, &links](map_type &v) {
-        auto full_path = str(get(v, "full_path"));
-
-        if (!os::path::isSymLink(full_path))
+    auto process_symlink = [this, &links](map_type &path) {
+        QString full_path = QFileInfo(path["full_path"].toString()).absoluteFilePath();
+        if (!QFileInfo(full_path).isSymLink())
             return;
 
-        qCDebug(lcBackup) << "Process symlink" << v;
-        if (!os::path::isDescendent(full_path, str(get(v, "root_path")))) {
-            if (is(get(v, "required")))
-                error::raise({{"msg", "Required path does not belong to its root dir"}
-                        , {"path", full_path}});
-            v["skip"] = true;
+        QString tgt = QFileInfo(full_path).symLinkTarget();
+        full_path = QFileInfo(full_path).canonicalFilePath();
+        QString root_path = QFileInfo(path["root_path"].toString()).canonicalFilePath();
+        QString tgt_path = QDir(home).relativeFilePath(full_path);
+
+        qCDebug(lcBackup) << "Process symlink" << path;
+        if (!full_path.contains(QRegExp("^" + root_path))) {
+            if (path["required"].toBool())
+                throw std::runtime_error("Required path does not belong to its root dir: "
+                                         + full_path.toStdString());
+            path["skip"] = true;
             return;
         }
 
-        // separate link and deref destination
-        auto tgt = os::path::target(full_path);
-        full_path = os::path::canonical(os::path::deref(full_path));
-        auto tgt_path = os::path::relative(full_path, home);
-
-        map_type link_info(v);
-        link_info.unite(v);
+        map_type link_info(path);
+        link_info.unite(path);
         link_info["target"] = tgt;
         link_info["target_path"] = tgt_path;
         qCDebug(lcBackup) << "Symlink info" << link_info;
         links.add(link_info);
 
-        v["full_path"] = full_path;
-        v["path"] = tgt_path;
+        path["full_path"] = full_path;
+        path["path"] = tgt_path;
     };
 
     auto is_src_exists = [](map_type const &info) {
         auto res = true;
-        auto full_path = str(info["full_path"]);
-        if (is(info["skip"])) {
+        auto full_path = info["full_path"].toString();
+        if (info["skip"].toBool()) {
             res = false;
-        } else if (!os::path::exists(full_path)) {
-            if (is(info["required"]))
-                error::raise({{"msg", "Required path does not exist"}
-                        , {"path", full_path}});
+        } else if (!QFileInfo(full_path).exists()) {
+            if (info["required"].toBool())
+                throw std::runtime_error("Required path does not exist: " +
+                                          full_path.toStdString());
             res = false;
         }
         if (!res)
             qCDebug(lcBackup) << "Does not exist/skip" << info;
-
         return res;
     };
 
     std::for_each(paths.begin(), paths.end(), process_symlink);
     list_type existing_paths;
-    for (auto it = paths.begin(); it != paths.end(); ++it) {
-        if (is_src_exists(*it))
-            existing_paths.push_back(*it);
+    for (auto const &path : paths) {
+        if (is_src_exists(path))
+            existing_paths.push_back(path);
     }
     std::for_each(existing_paths.begin(), existing_paths.end(), copy_entry);
     links.save();
@@ -348,19 +349,18 @@ void Operation::to_vault(QString const &data_type
 }
 
 void Operation::from_vault(QString const &data_type
-                           , std::unique_ptr<list_type> paths_ptr
+                           , list_type &items
                            , map_type const &location)
 {
-    auto items = unbox(std::move(paths_ptr));
     qCDebug(lcBackup) << "From vault" << data_type << "Paths" << items << "Location" << location;
     QString src_root(get_root_vault_dir(data_type));
 
     bool overwrite_default;
     {
-        auto v = get(location, "options", "overwrite");
+        auto v = location["options"].toMap()["overwrite"];
         if (!v.isValid())
-            v = get(context, "options", "overwrite");
-        overwrite_default = is(v);
+            v = context["options"].toMap()["overwrite"];
+        overwrite_default = v.toBool();
     }
 
     Links links(read_links(src_root), src_root);
@@ -368,82 +368,78 @@ void Operation::from_vault(QString const &data_type
     auto fallback_v0 = [src_root, &items]() {
         qCDebug(lcBackup) << "Restoring from old unit version";
         if (items.empty())
-            error::raise({{"msg", "There should be at least 1 item"}});
+            throw std::runtime_error("There should be at least 1 item");
         // during migration from initial format old (and single)
         // item is going first
-        auto dst = os::path::join(str(items[0]["full_path"]));
-        if (!os::path::isDir(dst)) {
-            if (!os::mkdir(dst, {{"parent", true}}))
-                error::raise({{"msg", "Can't create directory"}, {"dir", dst}});
-        }
+        QString dst = QFileInfo(items[0]["full_path"].toString()).absoluteFilePath();
+        if (!QFileInfo(dst).isDir() && !QDir().mkpath(dst))
+                throw std::runtime_error("Can't create directory" + dst.toStdString());
         update_tree(src_root, dst);
     };
 
     auto process_absent_and_links = [src_root, &links](map_type &item) {
-        auto item_path = str(item["path"]);
-        auto src = os::path::join(src_root, item_path);
-        if (os::path::exists(src)) {
+        QString item_path = item["path"].toString();
+        QString src = QFileInfo(src_root + "/" + item_path).absoluteFilePath();
+        if (QFileInfo(src).exists()) {
             item["src"] = src;
             return map_type();
         }
-        auto link = links.get(item);
+        map_type link = links.get(item);
         item["skip"] = true;
 
         auto create_link = [](map_type const &link, map_type const &item) {
             create_dst_dirs(item);
-            os::symlink(str(link["target"]), str(item["full_path"]));
+            QFile::link(link["target"].toString(), item["full_path"].toString());
         };
 
         if (link.empty()) {
             qCDebug(lcBackup) << "No symlink for" << item_path;
-            if (is(item["required"]))
-                error::raise({{"msg", "No required source item"},
-                            {"path", src}, {"path", link["path"]}});
+            if (item["required"].toBool()) {
+                qCCritical(lcBackup) << "No source item:" << src << link["path"];
+                throw std::runtime_error("No required source item");
+            }
             return map_type();
         }
 
         qCDebug(lcBackup) << "There is a symlink for" << item_path;
         QVariantMap linked(item);
-        auto target_path = str(link["target_path"]);
+        QString target_path = link["target_path"].toString();
         linked["path"] = target_path;
-        linked["full_path"] = os::path::join(str(item["root_path"]), target_path);
-        src = os::path::join(src_root, target_path);
-        if (os::path::exists(src)) {
+        linked["full_path"] = QFileInfo(item["root_path"].toString() + "/" + target_path).absoluteFilePath();
+        src = QFileInfo(src_root + "/"  + target_path).absoluteFilePath();
+        if (QFileInfo(src).exists()) {
             linked["src"] = src;
             linked["skip"] = false;
             create_link(link, item);
             qCDebug(lcBackup) << "Symlink target path is" << linked;
             return linked;
-        } else if (is(item["required"])) {
-            error::raise({{"msg", "No linked source item"},
-                        {"path", src}, {"link", link["path"]}
-                        , {"target", linked["path"]}});
+        } else if (item["required"].toBool()) {
+            qCCritical(lcBackup) << "No linked source item:" << "path" << src
+                     << "link" << link["path"] << "target" << linked["path"];
+            throw std::runtime_error("No linked source item");
         }
         return map_type();
     };
 
-    auto v = version(src_root).get();
+    unsigned v = version(src_root).get();
     if (v > current_version) {
-        error::raise({{"msg", "Can't restore from newer unit version"
-                        ", upgrade vault"},
-                    {"expected", current_version}, {"actual", v}});
+        throw std::runtime_error("Can't restore from newer unit version. Expected:"
+                    + std::to_string(current_version) + " got: " + std::to_string(v));
     } else if (v < current_version) {
         return fallback_v0();
     }
 
     list_type linked_items;
-    for (auto it = items.begin(); it != items.end(); ++it) {
-        auto linked = process_absent_and_links(*it);
+    for (auto &item : items) {
+        map_type linked = process_absent_and_links(item);
         if (!linked.empty())
             linked_items.push_back(std::move(linked));
     }
     items.append(linked_items);
     qCDebug(lcBackup) << "LINKED+" << items;
 
-    for (auto it = items.begin(); it != items.end(); ++it) {
-        auto &item = *it;
-        QString src, dst_dir, dst;
-        if (is(item["skip"])) {
+    for (auto const &item : items) {
+        if (item["skip"].toBool()) {
             qCDebug(lcBackup) << "Skipping" << item["path"].toString();
             continue;
         }
@@ -455,9 +451,9 @@ void Operation::from_vault(QString const &data_type
 
         // TODO process correctly self dir (copy with dir itself)
         create_dst_dirs(item);
-        src = item["src"].toString();
-        dst = item["full_path"].toString();
-        dst_dir = QFileInfo(dst).path();
+        QString src = item["src"].toString();
+        QString dst = item["full_path"].toString();
+        QString dst_dir = QFileInfo(dst).path();
         if (QFileInfo(src).isDir()) {
             src = QFileInfo(src).canonicalFilePath();
             cptree(src, dst_dir);
@@ -476,49 +472,57 @@ void Operation::execute()
     qCDebug(lcBackup) << "Unit execute. Context:" << context;
     action_type action;
 
-    if (!os::path::isDir(home))
-        error::raise({{"msg", "Home dir doesn't exist"}, {"dir", home}});
+    if (!QFileInfo(home).isDir())
+        throw std::runtime_error("Home dir doesn't exist" + home.toStdString());
 
-    auto action_name = parser.value("action");
+    QString action_name = parser.value("action");
     using namespace std::placeholders;
     if (action_name == "export") {
         action = std::bind(&Operation::to_vault, this, _1, _2, _3);
     } else if (action_name == "import") {
         action = std::bind(&Operation::from_vault, this, _1, _2, _3);
     } else {
-        error::raise({{ "msg", "Unknown action"}, {"action", action_name}});
+        throw std::runtime_error("Unknown action" + action_name.toStdString());
     }
 
     auto get_home_path = [this](QVariant const &item) {
         map_type res;
-        if (hasType(item, QMetaType::QString)) {
-            res["path"] = str(item);
-        } else if (hasType(item, QMetaType::QVariantMap)) {
+        if (static_cast<QMetaType::Type>(item.type()) == QMetaType::QString) {
+            res["path"] = item.toString();
+        } else if (static_cast<QMetaType::Type>(item.type()) == QMetaType::QVariantMap) {
             res.unite(item.toMap());
         } else {
-            error::raise({{"msg", "Unexpected path type"}, {"item", item}});
+            throw std::runtime_error("Unexpected path type" +
+            item.toString().toStdString());
         }
 
-        auto path = str(res["path"]);
+        QString path = res["path"].toString();
         if (path.isEmpty())
-            error::raise({{"msg", "Invalid data(path)"}, {"item", item}});
+            throw std::runtime_error("Invalid data(path)" +
+                            item.toString().toStdString());
 
-        res["full_path"] = os::path::join(home, path);
+        res["full_path"] = QFileInfo(home + "/" + path).absoluteFilePath();
         res["root_path"] = home;
         return res;
     };
 
+
     auto process_home_path = [&action, get_home_path](map_type const &location) {
+        auto create_paths_list = [get_home_path](auto const &items) {
+            list_type l;
+            for (auto const &i : items)
+                 l.push_back(get_home_path(i));
+            return l;
+        };
+
         for (auto it = location.begin(); it != location.end(); ++it) {
             auto const &name = it.key();
             auto const &items = it.value();
             if (name == "options")
                 continue; // skip options
             auto data_type = name;
-            auto paths = (hasType(items, QMetaType::QString)
-                          ? list_type({get_home_path(items)})
-                          : util::map<map_type>(get_home_path, items.toList()));
-            action(data_type, box(std::move(paths)), location);
+            list_type paths = create_paths_list(items.toList());
+            action(data_type, paths, location);
         };
     };
 
@@ -529,9 +533,9 @@ void Operation::execute()
             continue; // skip options
 
         if (name == "home") {
-            process_home_path(map(value));
+            process_home_path(value.toMap());
         } else {
-            error::raise({{"msg", "Unknown context item"}, {"item", name}});
+            throw std::runtime_error("Unknown context item" + name.toStdString());
         }
     };
 
@@ -544,12 +548,9 @@ int execute(QVariantMap const &info)
     try {
         Operation op(info);
         op.execute();
-    } catch (error::Error const &e) {
-        qCDebug(lcBackup) << e;
-        return 1;
     } catch (std::exception const &e) {
-        qCDebug(lcBackup) << e.what();
-        return 2;
+        qCCritical(lcBackup) << e.what();
+        return 1;
     }
     return 0;
 }
