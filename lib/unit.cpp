@@ -244,7 +244,7 @@ void create_dst_dirs(map_type const &item)
 {
     QString path = item["full_path"].toString();
     if (!QFileInfo(item["src"].toString()).isDir())
-        path = QFileInfo(path).dir().dirName();
+        path = QFileInfo(path).dir().absolutePath();
 
     if (!QFileInfo(path).isDir()) {
         if (!QDir().mkpath(path) && item["required"].toBool())
