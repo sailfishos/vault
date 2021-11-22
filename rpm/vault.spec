@@ -3,8 +3,7 @@ Name: vault
 Version: 1.0.2
 Release: 1
 License: LGPLv2
-Group: Development/Libraries
-URL: https://git.sailfishos.org/mer-core/vault
+URL: https://github.com/sailfishos/vault
 Source0: %{name}-%{version}.tar.bz2
 BuildRequires: pkgconfig(Qt5Core) >= 5.2.0
 Requires(post): /sbin/ldconfig
@@ -32,6 +31,7 @@ rm -rf %{buildroot}
 
 %files
 %defattr(-,root,root,-)
+%license LICENSE
 %{_libdir}/libvault.so*
 
 %files devel
