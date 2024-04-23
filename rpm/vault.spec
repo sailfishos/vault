@@ -26,22 +26,20 @@ vault library header files etc.
 make %{?_smp_mflags}
 
 %install
-rm -rf %{buildroot}
 %qmake5_install
-
-%files
-%defattr(-,root,root,-)
-%license LICENSE
-%{_libdir}/libvault.so*
-
-%files devel
-%defattr(-,root,root,-)
-%{_libdir}/pkgconfig/vault.pc
-%dir %{_includedir}/vault
-%{_includedir}/vault/*.h
 
 %post
 /sbin/ldconfig || :
 
 %postun
 /sbin/ldconfig || :
+
+%files
+%license LICENSE
+%{_libdir}/libvault.so.*
+
+%files devel
+%{_libdir}/libvault.so
+%{_libdir}/pkgconfig/vault.pc
+%dir %{_includedir}/vault
+%{_includedir}/vault/*.h
