@@ -302,7 +302,8 @@ void Operation::to_vault(QString const &data_type
         QString tgt_path = QDir(home).relativeFilePath(full_path);
 
         qCDebug(lcBackup) << "Process symlink" << path;
-        if (!full_path.contains(QRegExp("^" + root_path))) {
+
+        if (!full_path.startsWith(root_path)) {
             if (path["required"].toBool())
                 throw std::runtime_error("Required path does not belong to its root dir: "
                                          + full_path.toStdString());

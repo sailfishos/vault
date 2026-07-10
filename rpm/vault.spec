@@ -5,7 +5,7 @@ Release: 1
 License: LGPLv2
 URL: https://github.com/sailfishos/vault
 Source0: %{name}-%{version}.tar.bz2
-BuildRequires: pkgconfig(Qt5Core) >= 5.2.0
+BuildRequires: pkgconfig(Qt5Core)
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
 
